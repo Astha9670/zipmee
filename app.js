@@ -10,6 +10,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const loadingOverlay = document.getElementById("loadingOverlay");
   const leftUserEl = document.getElementById("leftUser");
   const rightUserEl = document.getElementById("rightUser");
+  const toggleSidebarBtn = document.getElementById("toggleSidebar");
+  const closeSidebarBtn = document.getElementById("closeSidebar");
+  const sidebar = document.getElementById("sidebar");
+  const dateSearch = document.getElementById("dateSearch");
+
+  // Analytics elements
+  const wordStats = document.getElementById("wordStats");
+  const emojiStats = document.getElementById("emojiStats");
+  const responseStats = document.getElementById("responseStats");
+  const chatSummary = document.getElementById("chatSummary");
+
+  let parsedMessages = [];
+  let currentUser = "";
+  let otherUser = "";
 
   if (!zipInput || !goBtn || !chatContainer) return;
 
@@ -18,6 +32,29 @@ document.addEventListener("DOMContentLoaded", () => {
   zipInput.addEventListener("change", () => {
     const file = zipInput.files[0];
     fileNameSpan.textContent = file ? file.name : "";
+  });
+
+  /* ---------------- SIDEBAR TOGGLE ---------------- */
+
+  toggleSidebarBtn.addEventListener("click", () => {
+    sidebar.classList.toggle("open");
+  });
+
+  closeSidebarBtn.addEventListener("click", () => {
+    sidebar.classList.remove("open");
+  });
+
+  /* ---------------- DATE SEARCH ---------------- */
+
+  dateSearch.addEventListener("change", (e) => {
+    const selectedDate = e.target.value;
+    if (!selectedDate) {
+      renderChat(parsedMessages, {});
+      return;
+    }
+
+    const filteredMessages = parsedMessages.filter(msg => msg.date === selectedDate);
+    renderChat(filteredMessages, {});
   });
 
   /* ---------------- LOAD BUTTON ---------------- */
@@ -71,10 +108,19 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
+      const parsed = parseChatText(chatText);
+      parsedMessages = parsed;
+
+      // Determine users
+      const users = Array.from(new Set(parsed.map(m => m.sender)));
+      currentUser = users[0] || "";
+      otherUser = users[1] || "";
+
       uploadSection.classList.add("displayNone");
       chatWrapper.classList.remove("displayNone");
 
-      renderChat(chatText, mediaMap);
+      renderChat(parsedMessages, mediaMap);
+      calculateAnalytics(parsedMessages);
 
     } catch (err) {
       console.error(err);
@@ -91,24 +137,17 @@ document.addEventListener("DOMContentLoaded", () => {
     loadingOverlay.classList.toggle("displayNone", !state);
   }
 
-  /* ---------------- CHAT RENDER ---------------- */
+  /* ---------------- CHAT PARSING ---------------- */
 
-  function renderChat(text, mediaMap) {
-
-    chatContainer.innerHTML = "";
-    chatWrapper.scrollTop = 0;
-
+  function parseChatText(text) {
     text = text.replace(/\u202F/g, " ");
     const lines = text.split("\n");
 
     const regex =
       /^(\d{1,2}\/\d{1,2}\/\d{4}),\s(.+?)\s-\s(.*?):\s([\s\S]*)$/;
 
-    let lastDate = null;
     const parsed = [];
     const userSet = new Set();
-
-    /* -------- PARSE ALL MESSAGES -------- */
 
     for (const line of lines) {
       const match = line.match(regex);
@@ -118,19 +157,26 @@ document.addEventListener("DOMContentLoaded", () => {
       const sender = senderRaw.trim();
 
       userSet.add(sender);
-
       parsed.push({ date, time, sender, message });
     }
 
-    /* -------- USER DETECTION -------- */
+    return parsed;
+  }
 
-    const users = Array.from(userSet);
+  /* ---------------- CHAT RENDER ---------------- */
 
-    let primaryUser = users[0] || "";
-    let secondaryUser = users[1] || "";
+  function renderChat(messages, mediaMap) {
 
-    if (leftUserEl) leftUserEl.textContent = secondaryUser;
-    if (rightUserEl) rightUserEl.textContent = primaryUser;
+    chatContainer.innerHTML = "";
+    chatWrapper.scrollTop = 0;
+
+    if (!messages || messages.length === 0) {
+      chatContainer.innerHTML = "No messages to display.";
+      return;
+    }
+
+    const parsed = messages;
+    let lastDate = null;
 
     /* -------- CHUNK SYSTEM -------- */
 
@@ -156,7 +202,7 @@ document.addEventListener("DOMContentLoaded", () => {
           lastDate = date;
         }
 
-        const side = sender === primaryUser ? "right" : "left";
+        const side = sender === currentUser ? "right" : "left";
 
         const msgDiv = document.createElement("div");
         msgDiv.className = `message ${side}`;
@@ -237,6 +283,88 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       };
     }
+  }
+
+  /* ---------------- ANALYTICS CALCULATION ---------------- */
+
+  function calculateAnalytics(messages) {
+    if (!messages || messages.length === 0) return;
+
+    // Word frequency
+    const wordCount = {};
+    const emojiCount = {};
+    const responseTimes = [];
+    let lastMessageTime = null;
+    let lastSender = null;
+
+    messages.forEach(msg => {
+      const text = msg.message.toLowerCase();
+
+      // Count words
+      const words = text.split(/\s+/).filter(word => word.length > 2);
+      words.forEach(word => {
+        wordCount[word] = (wordCount[word] || 0) + 1;
+      });
+
+      // Count emojis
+      const emojis = text.match(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu) || [];
+      emojis.forEach(emoji => {
+        emojiCount[emoji] = (emojiCount[emoji] || 0) + 1;
+      });
+
+      // Calculate response times
+      if (lastMessageTime && lastSender && lastSender !== msg.sender) {
+        const currentTime = new Date(`${msg.date} ${msg.time}`);
+        const timeDiff = (currentTime - lastMessageTime) / 1000 / 60; // minutes
+        if (timeDiff < 60) { // Only count responses within 1 hour
+          responseTimes.push(timeDiff);
+        }
+      }
+
+      lastMessageTime = new Date(`${msg.date} ${msg.time}`);
+      lastSender = msg.sender;
+    });
+
+    // Display word stats
+    const topWords = Object.entries(wordCount)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 10);
+    wordStats.innerHTML = topWords.map(([word, count]) => `<div>${word}: ${count}</div>`).join('');
+
+    // Display emoji stats
+    const topEmojis = Object.entries(emojiCount)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 10);
+    emojiStats.innerHTML = topEmojis.map(([emoji, count]) => `<div>${emoji}: ${count}</div>`).join('');
+
+    // Display response times
+    if (responseTimes.length > 0) {
+      const avgResponse = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+      const fastestResponse = Math.min(...responseTimes);
+      const slowestResponse = Math.max(...responseTimes);
+      responseStats.innerHTML = `
+        <div>Average: ${avgResponse.toFixed(1)} min</div>
+        <div>Fastest: ${fastestResponse.toFixed(1)} min</div>
+        <div>Slowest: ${slowestResponse.toFixed(1)} min</div>
+      `;
+    } else {
+      responseStats.innerHTML = '<div>No response data available</div>';
+    }
+
+    // Chat summary
+    const totalMessages = messages.length;
+    const uniqueDates = new Set(messages.map(m => m.date)).size;
+    const userMessages = {};
+    messages.forEach(msg => {
+      userMessages[msg.sender] = (userMessages[msg.sender] || 0) + 1;
+    });
+
+    chatSummary.innerHTML = `
+      <div>Total Messages: ${totalMessages}</div>
+      <div>Chat Duration: ${uniqueDates} days</div>
+      <div>${currentUser}: ${userMessages[currentUser] || 0} messages</div>
+      <div>${otherUser}: ${userMessages[otherUser] || 0} messages</div>
+    `;
   }
 
   /* ---------------- MEDIA VIEWER ---------------- */
